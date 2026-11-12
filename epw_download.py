@@ -102,6 +102,8 @@ def roman(n):
 
 
 # ------------------------------------------------------------------ finding the PDF
+LAST_PAGE = {}   # raw issue-page HTML, saved for checking if the PDF isn't found
+
 def pdf_from_issue_page(session, year, label):
     """Look for the full-issue PDF link in the issue page's HTML."""
     try:
@@ -110,10 +112,17 @@ def pdf_from_issue_page(session, year, label):
         return None, False
     if r.status_code != 200:
         return None, False
-    html = r.text.replace("\\/", "/")
-    m = re.search(rf"""[^"'\s>]*/system/files/pdf/{year}_\d+/{re.escape(label)}/"""
-                  r"""EPW_Vol[^"'<>]*?\.pdf""", html, re.I)
-    return (urljoin(BASE, m.group(0)) if m else None), True
+    LAST_PAGE[label] = r.text
+    return find_flipbook_pdf(r.text), True
+
+
+def find_flipbook_pdf(html):
+    """The PDF behind EPW's flipbook viewer: source="/system/files/pdf/...pdf".
+    It is often inside escaped JavaScript data, so un-escape first."""
+    text = (html.replace("\\/", "/").replace("\\u0022", '"')
+                .replace("&quot;", '"'))
+    m = re.search(r'source="(/system/files/pdf/[^"]+?\.pdf)"', text, re.I)
+    return urljoin(BASE, m.group(1)) if m else None
 
 
 def guessed_urls(year, label, sat):
@@ -124,10 +133,12 @@ def guessed_urls(year, label, sat):
     dates = [sat]
     if "-" in label:                      # double issue: try either week's date
         dates.append(sat + dt.timedelta(7))
-    for d in dates:
-        for month in (d.strftime("%B"), d.strftime("%b")):
-            name = f"EPW_Vol {roman(vol)}_No {label}_{d.day} {month} {d.year}.pdf"
-            yield folder + quote(name)
+    # EPW sometimes re-uploads an issue, which adds "_0", "_1"... to the name
+    for suffix in ("", "_0", "_1", "_2"):
+        for d in dates:
+            for month in (d.strftime("%B"), d.strftime("%b")):
+                name = f"EPW_Vol {roman(vol)}_No {label}_{d.day} {month} {d.year}{suffix}.pdf"
+                yield folder + quote(name)
 
 
 def fetch_pdf(session, url, referer):
@@ -158,6 +169,8 @@ def download_issue(session, year, n, sat, delay):
         if not page_exists:
             continue
         candidates = [link] if link else []
+        if link and "%26amp%3B" in link:          # "&" encoded twice by EPW
+            candidates.append(link.replace("%26amp%3B", "%26"))
         candidates += [u for u in guessed_urls(year, label, sat) if u not in candidates]
         login_problem = False
         for url in candidates:
@@ -174,8 +187,10 @@ def download_issue(session, year, n, sat, delay):
         if login_problem:
             sys.exit("\nEPW refused the PDF - you're not logged in.\n"
                      "Log in to epw.in in your browser, re-export cookies.txt, and rerun.")
-        print(f"  ! Issue {label} page exists but its PDF wasn't found.\n"
-              f"    Open {page_url}, find the PDF link (F12 > Network > 'pdf') and send it to me.")
+        dbg = HERE / f"debug_issue{label}.html"
+        dbg.write_text(LAST_PAGE.get(label, ""), encoding="utf-8")
+        print(f"  ! Issue {label}: PDF not found. Saved what EPW sent as {dbg.name}\n"
+              f"    (send that file for checking; delete it afterwards).")
         return [n, n + 1] if "-" in label else [n]
     print(f"  Issue {n} ({sat}) not on the site yet")
     return []
