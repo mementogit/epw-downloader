@@ -1,0 +1,4 @@
+cookies.txt
+*.pdf
+.epw_*/
+__pycache__/
